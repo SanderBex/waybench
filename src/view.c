@@ -564,7 +564,7 @@ view_moved(struct view *view)
 {
 	assert(view);
 	wlr_scene_node_set_position(&view->scene_tree->node,
-		view->current.x, view->current.y);
+		view->current.x, view->current.y + view->server->desktop_y_offset);
 	/*
 	 * Only floating views change output when moved. Non-floating
 	 * views (maximized/tiled/fullscreen) are tied to a particular

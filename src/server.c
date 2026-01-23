@@ -39,6 +39,13 @@
 #include <wlr/types/wlr_xdg_foreign_v1.h>
 #include <wlr/types/wlr_xdg_foreign_v2.h>
 
+/* desktop offset */
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h> 
+
 #if HAVE_XWAYLAND
 #include <wlr/xwayland.h>
 #include "xwayland-shell-v1-protocol.h"
@@ -421,6 +428,101 @@ handle_renderer_lost(struct wl_listener *listener, void *data)
 	wlr_renderer_destroy(old_renderer);
 }
 
+/* desktop offset */
+static int
+handle_ipc_connection(int fd, uint32_t mask, void *data)
+{
+	struct server *server = data;
+	
+	struct sockaddr_un client_addr;
+	socklen_t client_len = sizeof(client_addr);
+	int client_fd = accept(fd, (struct sockaddr *)&client_addr, &client_len);
+	
+	if (client_fd < 0) {
+		wlr_log(WLR_ERROR, "Failed to accept IPC connection: %s", strerror(errno));
+		return 0;
+	}
+	
+	char buffer[256];
+	ssize_t n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+	close(client_fd);
+	
+	if (n <= 0) {
+		wlr_log(WLR_ERROR, "Failed to receive IPC message");
+		return 0;
+	}
+	
+	buffer[n] = '\0';
+	wlr_log(WLR_INFO, "IPC received: %s", buffer);
+	
+	if (strncmp(buffer, "OFFSET:", 7) == 0) {
+		int new_offset = atoi(buffer + 7);
+		wlr_log(WLR_INFO, "Setting desktop offset from %d to %d", 
+			server->desktop_y_offset, new_offset);
+		server->desktop_y_offset = new_offset;
+		
+		/* Force all views to update their positions */
+		struct view *view;
+		int view_count = 0;
+		wl_list_for_each(view, &server->views, link) {
+			if (view->mapped && view->scene_tree) {
+				wlr_scene_node_set_position(&view->scene_tree->node,
+					view->current.x, view->current.y + server->desktop_y_offset);
+				view_count++;
+			}
+		}
+		wlr_log(WLR_INFO, "Updated %d views with offset", view_count);
+		
+		/* Update layer-shell surfaces (including waybar) */
+		struct output *output;
+		wl_list_for_each(output, &server->outputs, link) {
+			if (output_is_usable(output)) {
+				/* Damage the whole output to force redraw */
+				wlr_output_schedule_frame(output->wlr_output);
+			}
+		}
+	}
+	
+	return 0;
+}
+
+/* desktop offset */
+static void
+setup_ipc_socket(struct server *server)
+{
+	const char *socket_path = "/tmp/waybench.sock";
+	unlink(socket_path);
+	
+	server->ipc_socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (server->ipc_socket_fd < 0) {
+		wlr_log(WLR_ERROR, "Failed to create IPC socket");
+		return;
+	}
+	
+	struct sockaddr_un addr = {0};
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+	
+	if (bind(server->ipc_socket_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+		wlr_log(WLR_ERROR, "Failed to bind IPC socket");
+		close(server->ipc_socket_fd);
+		return;
+	}
+	
+	if (listen(server->ipc_socket_fd, 5) < 0) {
+		wlr_log(WLR_ERROR, "Failed to listen on IPC socket");
+		close(server->ipc_socket_fd);
+		return;
+	}
+	
+	server->ipc_event_source = wl_event_loop_add_fd(
+		server->wl_event_loop, server->ipc_socket_fd,
+		WL_EVENT_READABLE, handle_ipc_connection, server);
+	
+	wlr_log(WLR_INFO, "IPC socket listening at %s", socket_path);
+}
+
+
 void
 server_init(struct server *server)
 {
@@ -593,6 +695,11 @@ server_init(struct server *server)
 
 	output_init(server);
 
+
+	/* desktop offset */
+	/* Initialize offset */
+	server->desktop_y_offset = 0;
+
 	/*
 	 * Create some hands-off wlroots interfaces. The compositor is
 	 * necessary for clients to allocate surfaces and the data device
@@ -724,6 +831,8 @@ server_init(struct server *server)
 #if HAVE_XWAYLAND
 	xwayland_server_init(server, server->compositor);
 #endif
+
+setup_ipc_socket(server);
 }
 
 void
@@ -758,6 +867,16 @@ server_start(struct server *server)
 void
 server_finish(struct server *server)
 {
+
+	/* desktop offset */
+	if (server->ipc_event_source) {
+		wl_event_source_remove(server->ipc_event_source);
+	}
+	if (server->ipc_socket_fd >= 0) {
+		close(server->ipc_socket_fd);
+		unlink("/tmp/waybench.sock");
+	}
+
 #if HAVE_XWAYLAND
 	xwayland_server_finish(server);
 #endif

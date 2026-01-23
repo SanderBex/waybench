@@ -160,6 +160,11 @@ struct server {
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf;
 	struct wlr_compositor *compositor;
 
+	/* desktop offset */
+	int desktop_y_offset;
+	int ipc_socket_fd;
+	struct wl_event_source *ipc_event_source;
+
 	struct wl_event_source *sighup_source;
 	struct wl_event_source *sigint_source;
 	struct wl_event_source *sigterm_source;
