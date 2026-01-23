@@ -473,11 +473,25 @@ handle_ipc_connection(int fd, uint32_t mask, void *data)
 		}
 		wlr_log(WLR_INFO, "Updated %d views with offset", view_count);
 		
-		/* Update layer-shell surfaces (including waybar) */
+		/* Update all outputs' layer-shell surfaces */
 		struct output *output;
 		wl_list_for_each(output, &server->outputs, link) {
 			if (output_is_usable(output)) {
-				/* Damage the whole output to force redraw */
+				/* Move all layer trees (background, bottom, top, overlay) */
+				for (size_t i = 0; i < 4; i++) {
+					if (output->layer_tree[i]) {
+						wlr_scene_node_set_position(&output->layer_tree[i]->node,
+							0, server->desktop_y_offset);
+					}
+				}
+				
+				/* Also move layer popups */
+				if (output->layer_popup_tree) {
+					wlr_scene_node_set_position(&output->layer_popup_tree->node,
+						0, server->desktop_y_offset);
+				}
+				
+				/* Schedule a frame to redraw */
 				wlr_output_schedule_frame(output->wlr_output);
 			}
 		}
